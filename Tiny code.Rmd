@@ -1,0 +1,109 @@
+---
+title: "Tidy Code"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+##Tidy code for your analysis
+
+```{r}
+library(meripQC)
+library(m6ALogisticModel)
+
+SE_CQN <- readRDS("CQN.rds")
+
+assays(SE_CQN)$m6Alog2FC[assays(SE_CQN)$geneExpression < 8] = NA #Mask methylation value have low gene expression.
+
+assays(SE_CQN)$m6Alog2FC[assays(SE_CQN)$IP_count + assays(SE_CQN)$input_count < 50] = NA #Mask methylation value have low IP + input count/information.
+
+SE_CQN <- SE_CQN[rowSums( is.na(assay(SE_CQN)) ) <= 15,] #Filter rows have too many missing values.
+
+SE_CQN <- Reduce_correlated_rows(SE_CQN,"spearman",".8",101,"maxMad") #Reduce the highly correlated rows.
+
+assays(SE_CQN)$m6Alog2FC = scale(
+                           assays(SE_CQN)$m6Alog2FC, 
+                           scale = apply(assays(SE_CQN)$m6Alog2FC, 2, mad, na.rm = TRUE)
+                            ) #Standardize the collumns
+
+Plot_column_joint(assays(SE_CQN)$m6Alog2FC,HDER = "CQN",METRIC = "euclidean",VISUAL = "dendrogram",GROUP_LABEL = SE_CQN$Tissue)
+
+Keep_top = 12000
+
+top_indx <- order(rowMads(assays(SE_CQN)$m6Alog2FC,na.rm = T),decreasing = T)[1:Keep_top]
+
+set.seed(1)
+
+Eval_row_joint(SE_CQN[top_indx,],"CQN",K = 4)
+```
+
+#DESEQ2 
+```{r}
+library(meripQC)
+library(m6ALogisticModel)
+
+SE_DESEQ2 <- readRDS("DESEQ2.rds")
+
+assays(SE_DESEQ2)$m6Alog2FC[assays(SE_DESEQ2)$geneExpression < 8] = NA #Mask methylation value have low gene expression.
+
+assays(SE_DESEQ2)$m6Alog2FC[assays(SE_DESEQ2)$IP_count + assays(SE_DESEQ2)$input_count < 50] = NA #Mask methylation value have low IP + input count/information.
+
+SE_DESEQ2 <- SE_DESEQ2[rowSums( is.na(assay(SE_DESEQ2)) ) <= 15,] #Filter rows have too many missing values.
+
+SE_DESEQ2 <- Reduce_correlated_rows(SE_DESEQ2,"spearman",.8,101,"maxMad") #Reduce the highly correlated rows.
+
+assays(SE_DESEQ2)$m6Alog2FC = scale(
+                           assays(SE_DESEQ2)$m6Alog2FC, 
+                           scale = apply(assays(SE_DESEQ2)$m6Alog2FC, 2, mad, na.rm = TRUE)
+                            ) #Standardize the collumns
+
+Plot_column_joint(assays(SE_DESEQ2)$m6Alog2FC,HDER = "DESEQ2",METRIC = "euclidean",VISUAL = "dendrogram",GROUP_LABEL = SE_DESEQ2$Tissue)
+Plot_column_joint(assays(SE_DESEQ2)$m6Alog2FC,HDER = "DESEQ2",METRIC = "euclidean",VISUAL = "MDS",GROUP_LABEL = SE_DESEQ2$Tissue)
+
+Keep_top = 12000
+
+top_indx <- order(rowMads(assays(SE_DESEQ2)$m6Alog2FC,na.rm = T),decreasing = T)[1:Keep_top]
+
+set.seed(1)
+
+Eval_row_joint(SE_DESEQ2[top_indx,],"DESEQ2",K = 4)
+```
+
+#Naive model
+
+```{r}
+library(meripQC)
+library(m6ALogisticModel)
+
+SE_NAIVE <- readRDS("DESEQ2.rds")
+
+assays(SE_NAIVE)$m6Alog2FC = log2( (((assays(SE_NAIVE)$IP_count * 1e6) /colSums(assays(SE_NAIVE)$IP_count))+0.01) /  
+                              (((assays(SE_NAIVE)$input_count * 1e6) /colSums(assays(SE_NAIVE)$input_count))+0.01) )
+#Mask methylation value have low gene expression.
+assays(SE_NAIVE)$m6Alog2FC[assays(SE_NAIVE)$IP_count + assays(SE_NAIVE)$input_count < 50] = NA #Mask methylation value 
+
+SE_NAIVE <- SE_NAIVE[rowSums( is.na(assay(SE_NAIVE)) ) <= 15,] #Filter rows have too many missing values.
+
+SE_NAIVE <- Reduce_correlated_rows(SE_NAIVE,"spearman",.8,101,"maxMad") #Reduce the highly correlated rows.
+
+assays(SE_NAIVE)$m6Alog2FC = scale(
+                           assays(SE_NAIVE)$m6Alog2FC, 
+                           scale = apply(assays(SE_NAIVE)$m6Alog2FC, 2, mad, na.rm = TRUE)
+                            ) #Standardize the collumns
+
+Plot_column_joint(assays(SE_NAIVE)$m6Alog2FC,HDER = "NAIVE",METRIC = "euclidean",VISUAL = "dendrogram",GROUP_LABEL = SE_NAIVE$Tissue)
+Plot_column_joint(assays(SE_NAIVE)$m6Alog2FC,HDER = "NAIVE",METRIC = "euclidean",VISUAL = "MDS",GROUP_LABEL = SE_NAIVE$Tissue)
+
+Keep_top = 12000
+
+top_indx <- order(rowMads(assays(SE_NAIVE)$m6Alog2FC,na.rm = T),decreasing = T)[1:Keep_top]
+
+set.seed(1)
+
+Eval_row_joint(SE_NAIVE[top_indx,],"NAIVE",K = 4)
+
+```
+

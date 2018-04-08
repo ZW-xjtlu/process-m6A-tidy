@@ -1,0 +1,153 @@
+---
+title: "mRNA correlation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##1. Define linear models for each gene 
+
+Raw data filtering.
+```{r}
+library(meripQC)
+library(m6ALogisticModel)
+
+SE_CQN <- readRDS("CQN.rds")
+
+ENTREZ_ID <- readRDS("ENTREZ_ID.rds")
+
+names(rowRanges(SE_CQN)) = ENTREZ_ID
+
+SE_CQN <- SE_CQN[!grepl(";",names(rowRanges(SE_CQN))),] #Remove the rows mapped to multiple genes
+
+assays(SE_CQN)$m6Alog2FC[assays(SE_CQN)$geneExpression < 8] = NA # Mask methylation value have low gene expression.
+
+assays(SE_CQN)$m6Alog2FC[assays(SE_CQN)$IP_count + assays(SE_CQN)$input_count < 50] = NA # Mask methylation value have low IP + input count/information.
+
+SE_CQN <- SE_CQN[rowSums( is.na(assay(SE_CQN)) ) <= 15,] #Keep rows have less than half missing values.
+
+SE_CQN <- Reduce_correlated_rows(SE_CQN,"spearman",.8,101,"maxSum") #Reduce the highly correlated neighbooring rows.
+
+assays(SE_CQN)$m6Alog2FC = scale(
+                           assays(SE_CQN)$m6Alog2FC, 
+                           scale = apply(assays(SE_CQN)$m6Alog2FC, 2, mad, na.rm = TRUE)
+                            ) #Standardize the collumns
+```
+```{r}
+#15131 rows are lefted
+pvalues = rep(NA,15131)
+
+for (i in 1:15131) {
+pvalues[i] <- cor.test(assays(SE_CQN)$m6Alog2FC[i,], assays(SE_CQN)$geneExpression[i,])$p.value
+}
+
+hist(pvalues) #This p value distribution looks cool.
+Indx_sig <- which(p.adjust( pvalues , method  = "fdr") < .1)
+
+corvalues = rep(NA,length(Indx_sig))
+
+for (i in 1:length(Indx_sig)) {
+corvalues[i] <- cor.test(assays(SE_CQN)$m6Alog2FC[Indx_sig[i],], 
+                    assays(SE_CQN)$geneExpression[Indx_sig[i],], na.rm = T)$estimate
+}
+
+#The positive instances are small. Our collumn design is some extent lack of power. 
+
+Model_matrix <- data.frame(Y = corvalues > 0)
+Model_matrix <- cbind(Model_matrix,mcols(SE_CQN)[Indx_sig,])
+
+#This matrix is a little fat, so, it may suffer from "the over-fitting problem".
+
+LGM <- glm(Y~.,data = Model_matrix, family = binomial(link = "logit"))
+summary(LGM)
+```
+
+A common issue of such more sophisticated raw data analysis is that...
+You purge all the technical signals that could lead to false discoveries.
+
+- There would be ~ 3000 linear models.
+- How to cope with outliers?
+- How to run model diagnosis?
+: cook's distance?
+
+#Partial correlation:
+
+Start to build many linear models for each gene.
+
+```{r}
+#1. get the list of covariate data frame (Methylation sites for each gene).
+covariate_df_lst <- split( data.frame(assays(SE_CQN)$m6Alog2FC,row.names = NULL) , names(rowRanges(SE_CQN)) )
+
+#2. get the list of response variables (Gene expression for each gene).
+response_df <- assays(SE_CQN)$geneExpression[!duplicated(names(rowRanges(SE_CQN))),]
+rownames(response_df) <- names(rowRanges(SE_CQN))[!duplicated(names(rowRanges(SE_CQN)))]
+
+#3. construct model matrix, calculate linear model statistics (partial correlation + wald p values) for each gene 
+result_list <- vector("list",length = length(covariate_df_lst))
+names(result_list) <- names(covariate_df_lst)
+
+for(i in names(covariate_df_lst)){
+Model_matrix  <- data.frame( t(covariate_df_lst[[i]]) )
+Model_matrix$Y  <- response_df[i,]
+Model_matrix <- na.omit(Model_matrix)
+if(nrow(Model_matrix) <= 10) next
+result_list[[i]] <- summary( lm(Y~., data.frame(scale(Model_matrix )) ))$coefficients
+}
+
+result_df <- Reduce(rbind,result_list)
+result_df <- result_df[rownames(result_df) != "(Intercept)",] #Remove intercepts
+result_df <- data.frame( na.omit(result_df) ) #Remove missing values.
+hist(result_df$t.value) #Transformed partial correlation.
+hist(result_df$Pr...t..) #There are some fraction of healthy significant sites.
+
+#discuss how I can learn from those statsitics...
+indx_keep <- p.adjust( result_df$Pr...t.. , method = "fdr") < 0.25
+
+hist(result_df$Pr...t..[indx_keep])
+
+hist(result_df$t.value[indx_keep])
+
+indx_se <- as.numeric(gsub("X","",rownames(result_df)[indx_keep]))
+
+glmodel <- mcols( rowRanges(SE_CQN) )[indx_se,]
+
+glmodel$Y <- result_df$Estimate[indx_keep] > 0
+
+#only ~ 400 sites left
+#build a simple logistic model.
+summary(glm(Y~.,family = binomial(link = "logit"),data = glmodel))
+
+write.csv( data.frame(glmodel) , "model_400.csv")
+
+#above is very bad model...
+
+indx_se <- as.numeric(gsub("X","",rownames(result_df)))
+lmodel <- mcols( rowRanges(SE_CQN) )[indx_se,]
+
+lmodel$Y <- result_df$Estimate
+summary(lm(Y~.,data = lmodel))
+
+lmodel$Y <- lmodel$Y > 0
+#Worse model...
+
+#Or we could learn all the estimate returned by result_df$Estimate
+```
+
+#Compare with naive method: direct row correlation.
+```{r}
+Naive_cor_matrix <- matrix(NA,nrow = nrow( SE_CQN ), ncol = 2)
+for ( i in 1:nrow( SE_CQN ) ) {
+Test_cor <- cor.test(assays(SE_CQN)[["geneExpression"]][i,],assays(SE_CQN)[["m6Alog2FC"]][i,])
+Naive_cor_matrix[i,1] <- Test_cor$estimate 
+Naive_cor_matrix[i,2] <- Test_cor$p.value
+}
+
+colnames(Naive_cor_matrix) <- c("Correlation","pvalue") 
+
+write.csv( data.frame( cbind(mcols(SE_CQN),Naive_cor_matrix) ), "model_17000.csv")
+
+
+```
+

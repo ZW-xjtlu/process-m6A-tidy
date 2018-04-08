@@ -1,0 +1,5 @@
+"NULL_Deviance" 33129.4916527571
+"Residual_Deviance" 29310.4297273302
+"Reduced_prop" 0.115276804288335
+"Cost_df" 170
+"Chisq_stat" 3819.0619254269
