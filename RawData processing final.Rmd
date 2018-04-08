@@ -1,0 +1,389 @@
+---
+title: "RawDataProcessing_final"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## final raw data processing 
+
+- Drop 8 problematic conditions / samples.
+- Select rows mapped to only the single based sites.
+- still do 2 version: with / without cqn
+
+```{r}
+#1. define dropped samples
+Dropped_samples <- 
+c("human_gsc11_C",
+"human_gsc11_ALKBH5_",
+"human_MonoMac6_C",
+"human_MonoMac6_METTL14_",
+"human_NB4_C",
+"human_NB4_METTL14_",
+"Human_Brain",
+"HepG2_HS")
+
+mcount_combined_se <- readRDS("/Users/zhenwei/Documents/GitHub/mRNA-cor/results_combined/mcount_combined_se.rds")
+
+mcount_combined_se <- mcount_combined_se[,!mcount_combined_se$Experiment %in% Dropped_samples]
+
+human_sb_gr <- rowRanges( readRDS("/Users/zhenwei/Documents/GitHub/TREW-cons/L_Recount_SBsites_2018_2_1/SB_80k_human_SE.rds") )
+
+#Keep only sb row annotations.
+mcount_combined_se <- mcount_combined_se[rowRanges(mcount_combined_se) %in% human_sb_gr,]
+
+#Keep only m6A sites mapped to exonic regions.
+gcount_combined_se <- readRDS("/Users/zhenwei/Documents/GitHub/mRNA-cor/results_combined/gcount_combined_se.rds")
+
+mcount_combined_se <- mcount_combined_se[rowRanges(mcount_combined_se) %over% rowRanges(gcount_combined_se),]
+
+gcount_combined_se <- gcount_combined_se[,!gcount_combined_se$Experiment %in% Dropped_samples]
+
+#save the data as the final annotations
+
+saveRDS(mcount_combined_se,"mcount_final_se.rds")
+saveRDS(gcount_combined_se,"gcount_final_se.rds")
+```
+
+```{bash}
+scp /Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy/mcount_final_se.rds zhen@10.7.6.53:/home/zhen/Count_X/Inf_QC_18_4_3
+scp /Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy/gcount_final_se.rds zhen@10.7.6.53:/home/zhen/Count_X/Inf_QC_18_4_3
+```
+
+- Inference methylation with or without CQN
+
+```{r}
+#vi QC_Inf_CQN.R
+come_and_fly_hg19_meth <- function(SE_hg19,save_dir,Group_Meth) { 
+require(meripQC)
+require(SummarizedExperiment)
+hg19_txdb <- AnnotationDbi::loadDb("/home/zhen/Sano_Pack/hg19.txdb")
+Gtcoord_hg19 <- readRDS("/home/zhen/Sano_Pack/Gtcoord_hg19.rds")
+
+require(BSgenome.Hsapiens.UCSC.hg19)
+require(magrittr)
+GC_cont <- rowRanges( SE_hg19 ) %>% resize(width = 200,fix = "center") %>% Views(Hsapiens,.) %>% letterFrequency(.,letters="CG",as.prob = T) %>% as.numeric
+
+if(dir.exists(save_dir)){}else{dir.create(save_dir)}
+setwd(save_dir)
+
+for(i in unique(Group_Meth)) {
+cat(paste0("Processing....: ",i,"\n"))
+meRIP_QC_report(se_M = SE_hg19[,Group_Meth == i],
+                             txdb = hg19_txdb,
+                             gtcoord = Gtcoord_hg19,
+                             min_num_mod = 10000,
+                             save_title = i,
+                             DM_analysis = F,
+                             fdr_threshold = .05,
+                             PCA_plot = F,
+                             GC_idx_feature = GC_cont,
+                             row_minimal_counts = 10,
+                            cqn = T)
+}
+}
+
+library(SummarizedExperiment)
+SE_x <- readRDS("mcount_final_se.rds")
+group_meth <- colData(SE_x)$Experiment
+come_and_fly_hg19_meth(SE_x,"QC_inf_CQN",group_meth)
+```
+
+
+```{r}
+#vi QC_Inf_Deseq2.R
+come_and_fly_hg19_meth <- function(SE_hg19,save_dir,Group_Meth) { 
+require(meripQC)
+require(SummarizedExperiment)
+hg19_txdb <- AnnotationDbi::loadDb("/home/zhen/Sano_Pack/hg19.txdb")
+Gtcoord_hg19 <- readRDS("/home/zhen/Sano_Pack/Gtcoord_hg19.rds")
+
+require(BSgenome.Hsapiens.UCSC.hg19)
+require(magrittr)
+GC_cont <- rowRanges( SE_hg19 ) %>% resize(width = 200,fix = "center") %>% Views(Hsapiens,.) %>% letterFrequency(.,letters="CG",as.prob = T) %>% as.numeric
+
+if(dir.exists(save_dir)){}else{dir.create(save_dir)}
+setwd(save_dir)
+
+for(i in unique(Group_Meth)) {
+cat(paste0("Processing....: ",i,"\n"))
+meRIP_QC_report(se_M = SE_hg19[,Group_Meth == i],
+                             txdb = hg19_txdb,
+                             gtcoord = Gtcoord_hg19,
+                             min_num_mod = 10000,
+                             save_title = i,
+                             DM_analysis = F,
+                             fdr_threshold = .05,
+                             PCA_plot = F,
+                             GC_idx_feature = GC_cont,
+                             row_minimal_counts = 10,
+                            cqn = F)
+}
+}
+
+library(SummarizedExperiment)
+SE_x <- readRDS("mcount_final_se.rds")
+group_meth <- colData(SE_x)$Experiment
+come_and_fly_hg19_meth(SE_x,"QC_inf_Deseq2",group_meth)
+```
+
+- transform expression with or without cqn
+```{r}
+#vi rlog_cqn.R
+library(DESeq2)
+require(cqn)
+require(GenomicFeatures)
+require(BSgenome.Hsapiens.UCSC.hg19)
+
+SE_x <- readRDS("gcount_final_se.rds")
+
+SE_x <- SE_x[, colData(SE_x)$IP_input == "input"]
+
+exbg <- rowRanges(SE_x)
+gene_ex_seq <- DNAStringSet( Views(Hsapiens,unlist(exbg)) )
+GC_cont <- letterFrequency(gene_ex_seq, letters="CG", as.prob = F)
+Total_cont <- width(gene_ex_seq)
+GC_content_pergene <- tapply(GC_cont,names(gene_ex_seq),sum)/tapply(Total_cont,names(gene_ex_seq),sum)
+GC_index = GC_content_pergene
+
+cqnObject <- cqn(assay(SE_x),
+                  lengths = sum(width(exbg)),
+                    x = GC_index,
+                     sizeFactors = estimateSizeFactorsForMatrix(assay(SE_x)),
+                   verbose = FALSE) 
+
+cqnOffset <- cqnObject$glm.offset
+normFactors <- exp(cqnOffset)
+normFactors <- normFactors / exp(rowMeans(log(normFactors)))
+dds <- DESeqDataSet(SE_x,design = ~ Experiment)
+normalizationFactors(dds) <- normFactors
+dds <- estimateDispersions(dds)
+rld <- rlog(dds,blind = F)
+saveRDS(rld,"expression_cqn.rds")
+```
+
+```{r}
+#vi rlog_no_cqn.R
+library(DESeq2)
+SE_x <- readRDS("gcount_final_se.rds")
+SE_x <- SE_x[, colData(SE_x)$IP_input == "input"]
+dds <- DESeqDataSet(SE_x,design = ~ Experiment)
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+rld <- rlog(dds,blind = F)
+saveRDS(rld,"expression_nocqn.rds")
+```
+
+```{bash}
+cd /home/zhen/Count_X/Inf_QC_18_4_3
+tar -cvzf QC_inf_CQN.tar.gz ./QC_inf_CQN/*
+tar -cvzf QC_inf_Deseq2.tar.gz ./QC_inf_Deseq2/*
+```
+
+```{bash}
+scp zhen@10.7.6.53:/home/zhen/Count_X/Inf_QC_18_4_3/QC_inf_CQN.tar.gz /Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy
+
+scp zhen@10.7.6.53:/home/zhen/Count_X/Inf_QC_18_4_3/QC_inf_Deseq2.tar.gz /Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy
+
+scp zhen@10.7.6.53:/home/zhen/Count_X/Inf_QC_18_4_3/expression_cqn.rds /Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy
+
+scp zhen@10.7.6.53:/home/zhen/Count_X/Inf_QC_18_4_3/expression_nocqn.rds /Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy
+```
+
+
+Combine Inference results.
+```{r}
+dir_qc <- "/Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy/QC_inf_CQN"
+sub_dir <- list.files(dir_qc)
+dir_rds <- paste0(dir_qc,"/",sub_dir,"/",sub_dir,"_inf_result.rds")
+
+row_se <- readRDS("mcount_final_se.rds")
+assay2 <- matrix(nrow = nrow(row_se),ncol = length(sub_dir))
+
+
+for(i in seq_along(dir_rds)){
+Inf_result <- readRDS(dir_rds[i])
+assay2[,i] <- Inf_result$log2FoldChange
+}
+se2 <- SummarizedExperiment(rowRanges = rowRanges(row_se),colData = data.frame(sample = dir_rds), assay = assay2)
+
+colData(se2)$sample = gsub("^.*/|_inf_result.rds","",colData(se2)$sample)
+colData(se2)$sample  = gsub("-","_",colData(se2)$sample)
+colData(se2)$sample  = gsub("\\+","_over",colData(se2)$sample)
+
+saveRDS(se2,"CQN_meth.rds")
+```
+
+```{r}
+dir_qc <- "/Users/zhenwei/Documents/GitHub/mRNA-cor/Process_tidy/QC_inf_Deseq2"
+sub_dir <- list.files(dir_qc)
+dir_rds <- paste0(dir_qc,"/",sub_dir,"/",sub_dir,"_inf_result.rds")
+
+row_se <- readRDS("mcount_final_se.rds")
+assay2 <- matrix(nrow = nrow(row_se),ncol = length(sub_dir))
+
+
+for(i in seq_along(dir_rds)){
+Inf_result <- readRDS(dir_rds[i])
+assay2[,i] <- Inf_result$log2FoldChange
+}
+se2 <- SummarizedExperiment(rowRanges = rowRanges(row_se),colData = data.frame(sample = dir_rds), assay = assay2)
+
+colData(se2)$sample = gsub("^.*/|_inf_result.rds","",colData(se2)$sample)
+colData(se2)$sample  = gsub("-","_",colData(se2)$sample)
+colData(se2)$sample  = gsub("\\+","_over",colData(se2)$sample)
+
+saveRDS(se2,"deseq2_meth.rds")
+```
+
+```{r}
+methylation_nocqn <- readRDS("deseq2_meth.rds")
+methylation_cqn <- readRDS("CQN_meth.rds")
+expression_nocqn <- readRDS("expression_nocqn.rds")
+expression_cqn <- readRDS("expression_cqn.rds")
+
+library(DESeq2)
+library(meripQC)
+
+colnames(methylation_nocqn) = methylation_nocqn$sample
+colnames(methylation_cqn) = methylation_cqn$sample
+
+mean_rld_se <- function(SE_rld){
+rlog_mean <- matrix(NA,nrow = nrow(SE_rld), ncol = length(unique(SE_rld$Experiment)))
+
+colnames(rlog_mean) <- unique(SE_rld$Experiment)
+
+for(i in unique(SE_rld$Experiment)){
+rlog_mean[,i] <- rowMeans(cbind(assay(SE_rld)[,SE_rld$Experiment == i]))
+}
+
+SE_return <- SummarizedExperiment(assay = rlog_mean, 
+                                  rowRanges = rowRanges(SE_rld), 
+                                  colData = DataFrame(Experiment = colnames(rlog_mean),
+                                                      Tissue = c(  gsub("_.*$","",gsub("^[a-z]*_","", colnames(rlog_mean )[1:18])),
+                                                        rep(c("HEK293T","HEPG2","U2OS","ES/NPC","OKMS","ESC"),c(1,4,2,2,3,2))
+                                                      )))
+return(SE_return)
+}
+
+expression_nocqn <- mean_rld_se(expression_nocqn)
+expression_cqn <- mean_rld_se(expression_cqn)
+
+methylation_cqn <- methylation_cqn[,colnames(expression_cqn)]
+methylation_nocqn <- methylation_nocqn[,colnames(expression_nocqn)]
+
+Match_expression <- function(SE_M,SE_Exp) {
+fol <- findOverlaps( rowRanges(SE_M), rowRanges(SE_Exp) )
+Expression_Matrix <- matrix(NA,nrow = nrow(SE_M), ncol = ncol(SE_M))
+colnames(Expression_Matrix) = colnames(assay(SE_M))
+for(i in colnames(assay(SE_M))){
+matched_exp_i <- tapply( assay(SE_Exp)[subjectHits(fol),i], queryHits(fol), max)
+Expression_Matrix[as.numeric(names(matched_exp_i)),i] <- matched_exp_i
+}
+return(Expression_Matrix)
+}
+
+names(assays(methylation_cqn)) = "m6Alog2FC"
+assays(methylation_cqn)$geneExpression <- Match_expression(methylation_cqn, expression_cqn)
+
+names(assays(methylation_nocqn)) = "m6Alog2FC"
+assays(methylation_nocqn)$geneExpression <- Match_expression(methylation_nocqn, expression_nocqn)
+
+methylation_cqn$Tissue = c(gsub("_.*$","",gsub("^[a-z]*_","", colnames(methylation_cqn)[1:18])),
+                           rep(c("HEK293T","HEPG2","U2OS","ES/NPC","OKMS","ESC"),c(1,4,2,2,3,2))
+                                                      )
+
+methylation_nocqn$Tissue = c(gsub("_.*$","",gsub("^[a-z]*_","", colnames(methylation_nocqn)[1:18])),
+                           rep(c("HEK293T","HEPG2","U2OS","ES/NPC","OKMS","ESC"),c(1,4,2,2,3,2))
+                                                      )
+
+methylation_cqn$Tissue = gsub("hek293.","HEK293",methylation_cqn$Tissue,ignore.case = T)
+methylation_nocqn$Tissue = gsub("hek293.","HEK293",methylation_nocqn$Tissue,ignore.case = T)
+
+library(m6ALogisticModel)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(fitCons.UCSC.hg19)
+library(phastCons100way.UCSC.hg19)
+
+methylation_cqn = SE_CQN 
+
+methylation_nocqn = SE_DESEQ2
+
+Feature_List_expanded_hg19 = list(
+  HNRNPC_eCLIP = eCLIP_HNRNPC_gr,
+  YTHDC1_TREW = YTHDC1_TREW_gr,
+  YTHDF1_TREW = YTHDF1_TREW_gr,
+  YTHDF2_TREW = YTHDF2_TREW_gr,
+  miR_targeted_genes = miR_targeted_genes_grl,
+  TargetScan = TargetScan_hg19_gr,
+  Verified_miRtargets = verified_targets_gr,
+  METTL3_TREW = METTL3_TREW,
+  METTL14_TREW = METTL14_TREW,
+  WTAP_TREW = WTAP_TREW,
+  METTL16_CLIP = METTL16_CLIP,
+  ALKBH5_PARCLIP = ALKBH5_PARCLIP,
+  FTO_CLIP = FTO_CLIP,
+  FTO_eCLIP = FTO_eCLIP
+)
+
+SE_features_added <- predictors.annot(se = methylation_cqn,
+                                      txdb = TxDb.Hsapiens.UCSC.hg19.knownGene,
+                                      bsgnm = Hsapiens,
+                                      fc = fitCons.UCSC.hg19,
+                                      pc = phastCons100way.UCSC.hg19,
+                                      struct_hybridize = Struc_hg19,
+                                      feature_lst = Feature_List_expanded_hg19,
+                                      HK_genes_list = HK_hg19_eids)
+
+mcols(methylation_cqn) = mcols(SE_features_added)
+mcols(methylation_nocqn) = mcols(SE_features_added)
+
+saveRDS(methylation_cqn,"CQN.rds")
+saveRDS(methylation_nocqn,"DESEQ2.rds")
+```
+
+Add raw ip and input counts
+```{r}
+SE_CQN <- readRDS("CQN.rds")
+SE_DESEQ2 <- readRDS("DESEQ2.rds")
+SE_mcount <- readRDS("mcount_final_se.rds")
+
+sample_indx <- colnames(SE_CQN)
+Meth_IP_matrix <- matrix(NA,nrow(SE_mcount),length(sample_indx))
+colnames(Meth_IP_matrix) = sample_indx 
+Meth_input_matrix <- matrix(NA,nrow(SE_mcount),length(sample_indx))
+colnames(Meth_input_matrix) = sample_indx 
+
+for(i in sample_indx ){
+  Meth_IP_matrix[,i] <- rowSums( cbind(assay(SE_mcount)[,SE_mcount$Experiment==i & SE_mcount$IP_input == "IP"] ))
+  Meth_input_matrix[,i] <- rowSums( cbind(assay(SE_mcount)[,SE_mcount$Experiment==i & SE_mcount$IP_input == "input"] ))
+}
+
+assays(SE_CQN)$IP_count = Meth_IP_matrix
+assays(SE_CQN)$input_count = Meth_input_matrix
+
+assays(SE_DESEQ2)$IP_count = Meth_IP_matrix
+assays(SE_DESEQ2)$input_count = Meth_input_matrix
+
+saveRDS(SE_CQN,"CQN.rds")
+saveRDS(SE_DESEQ2,"DESEQ2.rds")
+```
+
+Add gene ids as the row data
+
+#This is a row annotation for gene mapping.
+```{r}
+SE_CQN <- readRDS("CQN.rds")
+SE_DESEQ2 <- readRDS("DESEQ2.rds")
+SE_expression <- readRDS("expression_cqn.rds")
+fol <- findOverlaps( rowRanges( SE_CQN ), rowRanges( SE_expression ) )
+Genes_ids_indx <- tapply(names(rowRanges( SE_expression ) )[subjectHits(fol)],queryHits(fol), function(x) paste0(x,collapse = ";") )
+Genes_row <- rep(NA,nrow(SE_CQN))
+Genes_row[as.numeric( names(Genes_ids_indx) )] <- Genes_ids_indx
+saveRDS( Genes_row, "ENTREZ_ID.rds")
+```
+
